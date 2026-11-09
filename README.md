@@ -46,7 +46,7 @@ I kept only what a launcher needs: a widget, a list, a filter, a launch. No bar,
 
 | Area | aizer |
 |---|---|
-| Lines of code | about 950 (one reading session) |
+| Lines of code | about 1100 (one reading session) |
 | Runtime dependencies | libc, wayland-client, xkbcommon, freetype, fontconfig |
 | Idle RAM | a few MB |
 | Configuration | single flat `aizer.h`, compile time only |
@@ -134,7 +134,7 @@ There is no config file, no IPC and no reload mechanism.
 | `WIDGET_W`, `WIDGET_H` | 419, 449 | widget size in pixels |
 | `ROW_H`, `MAX_ROWS` | 26, 15 | row height and visible rows |
 | `COLOR_*` | see file | colors in `0xRRGGBBAA` |
-| `BG_ALPHA` | `0xf0` | background alpha |
+| `BG_ALPHA` | `0xff` | background alpha (0xff = opaque) |
 | `FONT_NAME`, `FONT_SIZE`, `ROW_FONT_SIZE` | monospace, 16, 14 | font and sizes |
 | `PROMPT` | `">"` | search line prompt |
 | `QUERY_MAX` | 64 | query buffer size |
@@ -150,6 +150,16 @@ There is no config file, no IPC and no reload mechanism.
 aizer connects to the Wayland compositor, creates a layer surface centered on screen, and allocates a shared memory buffer in ARGB format. It draws text with FreeType through fontconfig, filters the application list on every keystroke, and redraws only when the input or selection changes. On Enter it forks and calls `execvp` without a shell, then exits.
 
 The application list comes from `.desktop` files under the XDG data directories plus executables found in `$PATH`. Entries are deduplicated by desktop id; the first copy wins.
+
+## Limitations
+
+- Wayland only: no X11 or XWayland support.
+- No icons, images or logos in the widget: text only.
+- No history or recent apps: the list resets on every launch.
+- No runtime config: change `aizer.h` and recompile.
+- Requires a compositor with `wlr-layer-shell` support.
+- Silent failure on exec: if a typed command is not found, the launcher exits without an error message.
+- `xkb_context_new` failure is not checked.
 
 ---
 

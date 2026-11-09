@@ -20,8 +20,8 @@
 #define COLOR_ACCENT 0x536878ffu  /* blue slate: prompt + cursor */
 #define COLOR_SEL_BG 0x53687859u  /* blue slate ~35%: selection bar */
 
-/* background alpha, transparency of widget surface */
-#define BG_ALPHA 0xf0u
+/* background alpha, transparency of widget surface (0xff = opaque) */
+#define BG_ALPHA 0xffu
 
 /* key hold: ms before repeat starts, then compositor rate */
 #define REPEAT_DELAY 150
