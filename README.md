@@ -1,17 +1,17 @@
 <div align="center">
-  <img src="https://capsule-render.vercel.app/api?type=waving&color=0A0A0A&height=80&section=header&text=aizer&fontSize=52&fontColor=536878&fontAlignY=72&animation=fadeIn" alt="aizer header">
+  <img src="https://capsule-render.vercel.app/api?type=waving&color=0A0A0A&height=80&section=header&text=aizer&fontSize=52&fontColor=E5E4E2&fontAlignY=72&animation=fadeIn" alt="aizer header">
   <br>
-  <img src="https://readme-typing-svg.demolab.com?font=JetBrains+Mono&size=14&pause=1200&color=536878&center=true&vCenter=true&width=600&lines=Minimal+Wayland+application+launcher;Centered+rectangle.+No+runtime+config;Compile-time+configuration+only" alt="aizer typing">
+  <img src="https://readme-typing-svg.demolab.com?font=JetBrains+Mono&size=14&pause=1200&color=E5E4E2&center=true&vCenter=true&width=600&lines=Minimal+Wayland+application+launcher;Centered+rectangle.+No+runtime+config;Compile-time+configuration+only" alt="aizer typing">
   <br>
   <img src="https://raw.githubusercontent.com/tinyopsec/assets/main/aizer/aizer-logo.svg" style="width: 32%; height: auto;" alt="aizer logo">
 </div>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/license-MIT-536878?style=flat&labelColor=0A0A0A" alt="license MIT">
-  <img src="https://img.shields.io/badge/C23-536878?style=flat&label=lang&labelColor=0A0A0A&logo=c&logoColor=536878" alt="C23">
-  <img src="https://img.shields.io/badge/Wayland-536878?style=flat&label=display&labelColor=0A0A0A" alt="Wayland">
-  <img src="https://img.shields.io/badge/make-536878?style=flat&label=build&labelColor=0A0A0A&logo=gnu&logoColor=536878" alt="make">
-  <img src="https://img.shields.io/badge/Linux-536878?style=flat&labelColor=0A0A0A&logo=linux&logoColor=536878" alt="Linux">
+  <img src="https://img.shields.io/badge/license-MIT-E5E4E2?style=flat&labelColor=0A0A0A" alt="license MIT">
+  <img src="https://img.shields.io/badge/C23-E5E4E2?style=flat&label=lang&labelColor=0A0A0A&logo=c&logoColor=E5E4E2" alt="C23">
+  <img src="https://img.shields.io/badge/Wayland-E5E4E2?style=flat&label=display&labelColor=0A0A0A" alt="Wayland">
+  <img src="https://img.shields.io/badge/make-E5E4E2?style=flat&label=build&labelColor=0A0A0A&logo=gnu&logoColor=E5E4E2" alt="make">
+  <img src="https://img.shields.io/badge/Linux-E5E4E2?style=flat&labelColor=0A0A0A&logo=linux&logoColor=E5E4E2" alt="Linux">
 </p>
 
 ## Contents
