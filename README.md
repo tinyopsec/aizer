@@ -14,6 +14,10 @@
   <img src="https://img.shields.io/badge/Linux-E5E4E2?style=flat&labelColor=0A0A0A&logo=linux&logoColor=E5E4E2" alt="Linux">
 </p>
 
+<div align="center">
+  <img src="https://raw.githubusercontent.com/tinyopsec/assets/main/aizer/aizer-screenshot.webp" style="width: 80%; height: auto;" alt="aizer screenshot">
+</div>
+
 ## Contents
 
 - [Get started](#get-started)
