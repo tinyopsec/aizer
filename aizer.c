@@ -997,8 +997,12 @@ single_instance(void)
 	if (dir && dir[0])
 		snprintf(path, sizeof path, "%s/aizer.lock", dir);
 	else
-		snprintf(path, sizeof path, "/tmp/aizer.lock");
+		snprintf(path, sizeof path, "/tmp/aizer-%d.lock", (int)getuid());
 	lockfd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+	if (lockfd < 0 && errno == EACCES) {
+		unlink(path);
+		lockfd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+	}
 	if (lockfd < 0)
 		return 0;
 	if (flock(lockfd, LOCK_EX | LOCK_NB) < 0) {
