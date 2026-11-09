@@ -6,11 +6,13 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -985,12 +987,37 @@ static const struct zwlr_layer_surface_v1_listener lfsurf_listener = {
 	.closed = layer_closed,
 };
 
+static int lockfd = -1;
+
+static int
+single_instance(void)
+{
+	char path[256];
+	const char *dir = getenv("XDG_RUNTIME_DIR");
+	if (dir && dir[0])
+		snprintf(path, sizeof path, "%s/aizer.lock", dir);
+	else
+		snprintf(path, sizeof path, "/tmp/aizer.lock");
+	lockfd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+	if (lockfd < 0)
+		return 0;
+	if (flock(lockfd, LOCK_EX | LOCK_NB) < 0) {
+		close(lockfd);
+		lockfd = -1;
+		return -1;
+	}
+	return 0;
+}
+
 int
 main(void)
 {
 	struct pollfd pfd;
 	int r;
 	uint64_t blink_at;
+
+	if (single_instance() < 0)
+		return 0;
 
 	if (load_font()) {
 		fprintf(stderr, "aizer: cannot load font %s\n", FONT_NAME);

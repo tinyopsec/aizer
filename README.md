@@ -69,6 +69,7 @@ What it does, nothing extra:
 | Close | exits after a successful launch, or on Esc |
 | Input | Up/Down move selection, Enter launch, Esc close, Backspace delete |
 | Repeat | held arrow keys scroll after a short delay |
+| Single instance | a second launch exits immediately if one is already running |
 | Build | clean under `gcc` or `clang` with `-std=c23 -pedantic -Wall -Wextra` |
 
 ---
