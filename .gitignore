@@ -1,0 +1,6 @@
+aizer
+aizer_dbg
+*.o
+*-protocol.c
+*-client-protocol.h
+*.tar.gz

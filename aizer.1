@@ -1,0 +1,124 @@
+.TH AIZER 1 "2026-11-08" "aizer-VERSION"
+.SH NAME
+aizer \- minimal Wayland application launcher
+.SH SYNOPSIS
+.B aizer
+.SH DESCRIPTION
+aizer is a minimal application launcher for Wayland. It shows a centered
+rectangle, reads the list of applications, filters it as you type, and
+launches the selected entry. It draws nothing except the widget and its
+text, and has no bar, no icons and no history.
+.P
+aizer is configured at compile time only. There is no configuration file,
+no IPC and no reload mechanism. See
+.BR CONFIGURATION .
+.P
+aizer does not start other programs by itself. Bind it to a key in the
+compositor.
+.SH OPTIONS
+aizer takes no options. Any argument prints a usage message to standard
+error and exits.
+.SH USAGE
+Run
+.B aizer
+from a key binding. A centered widget appears, the application list is
+loaded, and the launcher waits for input.
+.P
+Type to filter the list. Matching is case-insensitive and works on the
+application name and its generic name, as a substring or a subsequence.
+.P
+.TP
+.B Up, Down
+Move the selection.
+.TP
+.B Enter
+Launch the selected application, or a typed command line with arguments
+such as
+.IR "alacritty -e htop" .
+The launcher closes after a successful launch.
+.TP
+.B Esc
+Close without launching.
+.TP
+.B Backspace
+Delete the last character.
+.P
+Held arrow keys repeat after a short delay.
+.P
+The widget closes itself after a successful launch, so it does not stay
+in the background.
+.SH CONFIGURATION
+aizer is configured by editing
+.I aizer.h
+and recompiling:
+.P
+.RS
+.EX
+$ $EDITOR aizer.h
+$ make clean install
+.EE
+.RE
+.P
+Then restart aizer. The most important options are:
+.TP
+.B WIDGET_W, WIDGET_H
+Widget size in pixels.
+.TP
+.B ROW_H, MAX_ROWS
+Row height and number of visible rows.
+.TP
+.B COLOR_*
+Colors in
+.B 0xRRGGBBAA
+format.
+.TP
+.B BG_ALPHA
+Background alpha of the widget surface.
+.TP
+.B FONT_NAME, FONT_SIZE, ROW_FONT_SIZE
+Font family and sizes, resolved through fontconfig.
+.TP
+.B PROMPT
+Text shown before the query.
+.TP
+.B QUERY_MAX
+Size of the query buffer in bytes.
+.TP
+.B BLINK_MS
+Cursor blink half period in milliseconds.
+.TP
+.B REPEAT_DELAY
+Delay before key repeat starts, in milliseconds.
+.TP
+.B LIST_PATH_EXEC
+Set to 1 to list executables from
+.BR $PATH .
+.SH ENVIRONMENT
+.TP
+.B WAYLAND_DISPLAY
+The Wayland display to connect to.
+.SH EXIT STATUS
+aizer exits with 0 when it closes normally (Esc or after a launch). It
+exits with a non-zero status if it cannot connect to the Wayland display
+or on a fatal error.
+.SH STANDARDS
+aizer uses the Wayland core protocol, the wlr layer shell extension, and
+xkbcommon for keyboard input. It runs under any Wayland compositor that
+supports those.
+.SH BUGS AND LIMITATIONS
+.IP \(bu 2
+aizer shows no icons, images or logos. The list is text only.
+.IP \(bu 2
+aizer keeps no history and no state between runs.
+.IP \(bu 2
+aizer is a single widget on a single output. It does not manage windows.
+.IP \(bu 2
+The application list is read at startup. Changes to
+.B .desktop
+files are picked up on the next run.
+.IP \(bu 2
+aizer does not run under X11.
+.P
+Report bugs at the project issue tracker.
+.SH AUTHORS
+See the LICENSE file for copyright details (MIT).
