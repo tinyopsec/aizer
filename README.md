@@ -119,10 +119,6 @@ The widget closes itself after a successful launch, so it does not stay in the b
 
 ---
 
-<div align="center">
-  <img src="https://raw.githubusercontent.com/tinyopsec/assets/main/aizer/aizer-screenshot.webp" style="width: 80%; height: auto;" alt="aizer screenshot">
-</div>
-
 ---
 
 ## Configuration
