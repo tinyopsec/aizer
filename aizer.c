@@ -1,9 +1,10 @@
-/* aizer is minimal Wayland app launcher, centered rectangle widget.
+/* aizer is minimal Wayland app launcher: centered widget, type, Enter, done.
  * C23, deps: libc, wayland-client, xkbcommon, freetype, fontconfig. */
 #define _GNU_SOURCE
 #include "aizer.h"
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 
+#include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -15,7 +16,6 @@
 #include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
-#include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -27,9 +27,7 @@
 #include <fontconfig/fontconfig.h>
 
 struct app {
-	char name[96];
-	char gen[96];
-	char id[128]; /* desktop file id, dedup key */
+	char name[96], gen[96], id[128];
 	char *exec;
 };
 
@@ -49,157 +47,111 @@ static struct zwlr_layer_surface_v1 *lfsurf;
 static struct wl_keyboard *kb;
 static struct wl_buffer *buf;
 static uint32_t *px;
-static struct xkb_context *xkbctx;
-static struct xkb_keymap *xkbmap;
-static struct xkb_state *xkbstate;
-static int running = 1, configured, need_redraw, blink = 1, busy;
-static uint32_t rep_key;   /* held keycode for repeat, 0 = none */
-static uint64_t rep_at;    /* monotonic ms of next repeat */
-static int rep_rate = 25;  /* chars/sec, from wl_keyboard repeat_info */
+static struct xkb_context *xkbc;
+static struct xkb_keymap *xkbm;
+static struct xkb_state *xkbs;
+static int running = 1, configured, redraw, blink = 1, busy;
+static uint32_t rep_key;
+static uint64_t rep_at, rep_step = 25;
+static int lockfd = -1;
 
-static const struct wl_seat_listener seat_listener;
-
-static FT_Library ftlib;
+static FT_Library ft;
 static FT_Face face;
-static int asc;      /* baseline from line top, px */
-static int font_px;  /* current pixel size */
-
-static void
-pset(int x, int y, uint32_t c) /* c = 0xRRGGBBAA */
-{
-	uint32_t r, g, b, a;
-	if (x < 0 || y < 0 || x >= WIDGET_W || y >= WIDGET_H)
-		return;
-	r = (c >> 24) & 0xff;
-	g = (c >> 16) & 0xff;
-	b = (c >> 8) & 0xff;
-	a = c & 0xff;
-	px[(size_t)y * WIDGET_W + x] = (a << 24) | (r << 16) | (g << 8) | b;
-}
+static int asc;
 
 static void
 rect(int x, int y, int w, int h, uint32_t c)
 {
-	int i, j;
-	for (j = y; j < y + h; j++)
-		for (i = x; i < x + w; i++)
-			pset(i, j, c);
+	uint32_t v = c << 24 | c >> 8;
+	int i;
+
+	while (h-- > 0) {
+		for (i = 0; i < w; i++)
+			px[y * WIDGET_W + x + i] = v;
+		y++;
+	}
 }
 
-/* blend glyph coverage over existing pixel, keep buffer alpha */
+/* blend glyph coverage over the pixel, keep buffer alpha */
 static void
-blend(int x, int y, uint32_t c, unsigned char cov)
+blend(int x, int y, uint32_t c, unsigned a)
 {
 	uint32_t d;
-	unsigned r, g, b, dr, dg, db;
-	if (!cov || x < 0 || y < 0 || x >= WIDGET_W || y >= WIDGET_H)
+	unsigned r, g, b;
+
+	if (!a || x < 0 || y < 0 || x >= WIDGET_W || y >= WIDGET_H)
 		return;
-	r = (c >> 24) & 0xff;
-	g = (c >> 16) & 0xff;
-	b = (c >> 8) & 0xff;
-	d = px[(size_t)y * WIDGET_W + x];
-	dr = (d >> 16) & 0xff;
-	dg = (d >> 8) & 0xff;
-	db = d & 0xff;
-	dr = (r * cov + dr * (255 - cov)) / 255;
-	dg = (g * cov + dg * (255 - cov)) / 255;
-	db = (b * cov + db * (255 - cov)) / 255;
-	px[(size_t)y * WIDGET_W + x] = (d & 0xff000000u) | (dr << 16) |
-	    (dg << 8) | db;
+	d = px[y * WIDGET_W + x];
+	r = (c >> 24 & 255) * a + (d >> 16 & 255) * (255 - a);
+	g = (c >> 16 & 255) * a + (d >> 8 & 255) * (255 - a);
+	b = (c >> 8 & 255) * a + (d & 255) * (255 - a);
+	px[y * WIDGET_W + x] = (d & 0xff000000u) |
+	    r / 255 << 16 | g / 255 << 8 | b / 255;
 }
 
 static const char *
-utf8_next(const char *s, uint32_t *cp)
+dec(const char *s, uint32_t *cp)
 {
 	unsigned char c = (unsigned char)*s;
-	if (c < 0x80) {
-		*cp = c;
+	int n = c < 0x80 ? 0 : (c & 0xe0) == 0xc0 ? 1 :
+	    (c & 0xf0) == 0xe0 ? 2 : (c & 0xf8) == 0xf0 ? 3 : -1;
+
+	if (n < 0) {
+		*cp = '?';
 		return s + 1;
 	}
-	if ((c & 0xe0) == 0xc0 && (s[1] & 0xc0) == 0x80) {
-		*cp = ((uint32_t)(c & 0x1f) << 6) | (s[1] & 0x3f);
-		return s + 2;
-	}
-	if ((c & 0xf0) == 0xe0 && (s[1] & 0xc0) == 0x80 && (s[2] & 0xc0) == 0x80) {
-		*cp = ((uint32_t)(c & 0x0f) << 12) | ((uint32_t)(s[1] & 0x3f) << 6) |
-		    (s[2] & 0x3f);
-		return s + 3;
-	}
-	if ((c & 0xf8) == 0xf0 && (s[1] & 0xc0) == 0x80 && (s[2] & 0xc0) == 0x80 &&
-	    (s[3] & 0xc0) == 0x80) {
-		*cp = ((uint32_t)(c & 0x07) << 18) | ((uint32_t)(s[1] & 0x3f) << 12) |
-		    ((uint32_t)(s[2] & 0x3f) << 6) | (s[3] & 0x3f);
-		return s + 4;
-	}
-	*cp = '?';
+	*cp = n ? c & (0xff >> (n + 2)) : c;
+	while (n-- > 0 && ((unsigned char)s[1] & 0xc0) == 0x80)
+		*cp = (*cp << 6) | ((unsigned char)*++s & 0x3f);
 	return s + 1;
 }
 
 static int
-draw_char(int x, int ytop, uint32_t cp, uint32_t c)
+glyph(int x, int ytop, uint32_t cp, uint32_t c)
 {
 	FT_Bitmap *b;
 	int bx, by, row, col;
-	unsigned char *p;
+	unsigned a;
+
 	if (FT_Load_Char(face, cp, FT_LOAD_RENDER))
-		return font_px / 2;
+		return FONT_SIZE / 2;
 	b = &face->glyph->bitmap;
 	bx = x + face->glyph->bitmap_left;
 	by = ytop + asc - face->glyph->bitmap_top;
-	for (row = 0; row < (int)b->rows; row++) {
-		p = b->buffer + row * b->pitch;
-		for (col = 0; col < (int)b->width; col++)
-			if (p[col])
-				blend(bx + col, by + row, c, p[col]);
-	}
+	for (row = 0; row < (int)b->rows; row++)
+		for (col = 0; col < (int)b->width; col++) {
+			a = b->buffer[row * b->pitch + col];
+			if (a)
+				blend(bx + col, by + row, c, a);
+		}
 	return (int)(face->glyph->advance.x >> 6);
 }
 
-/* draw utf8 string, stop at lim (px); returns pen x */
+/* draw one line, clip at the right edge, return pen x */
 static int
-draw_str(int x, int ytop, const char *s, uint32_t c, int lim)
+text(int x, int ytop, const char *s, uint32_t c)
 {
 	uint32_t cp;
-	const char *n;
-	while (*s && x < lim) {
-		n = utf8_next(s, &cp);
-		x += draw_char(x, ytop, cp, c);
-		s = n;
+
+	while (*s && x < WIDGET_W) {
+		s = dec(s, &cp);
+		x += glyph(x, ytop, cp, c);
 	}
 	return x;
-}
-
-static int
-str_width(const char *s)
-{
-	int w = 0;
-	uint32_t cp;
-	const char *n;
-	while (*s) {
-		n = utf8_next(s, &cp);
-		if (!FT_Load_Char(face, cp, FT_LOAD_RENDER))
-			w += (int)(face->glyph->advance.x >> 6);
-		else
-			w += font_px / 2;
-		s = n;
-	}
-	return w;
 }
 
 static int
 load_font(void)
 {
 	FcPattern *pat, *fcm;
-	FcChar8 *file = NULL;
-	int idx = 0;
+	FcChar8 *file;
 	FcResult res;
-	if (FT_Init_FreeType(&ftlib))
-		return -1;
-	if (!FcInit())
+	int idx = 0, err;
+
+	if (FT_Init_FreeType(&ft) || !FcInit())
 		return -1;
 	pat = FcPatternCreate();
 	FcPatternAddString(pat, FC_FAMILY, (const FcChar8 *)FONT_NAME);
-	FcPatternAddDouble(pat, FC_SIZE, (double)FONT_SIZE);
 	FcConfigSubstitute(NULL, pat, FcMatchPattern);
 	FcDefaultSubstitute(pat);
 	fcm = FcFontMatch(NULL, pat, &res);
@@ -211,25 +163,12 @@ load_font(void)
 		return -1;
 	}
 	FcPatternGetInteger(fcm, FC_INDEX, 0, &idx);
-	if (FT_New_Face(ftlib, (const char *)file, idx, &face)) {
-		FcPatternDestroy(fcm);
-		return -1;
-	}
+	err = FT_New_Face(ft, (const char *)file, idx, &face);
 	FcPatternDestroy(fcm);
-	if (FT_Set_Pixel_Sizes(face, 0, FONT_SIZE))
+	if (err || FT_Set_Pixel_Sizes(face, 0, FONT_SIZE))
 		return -1;
 	asc = face->size->metrics.ascender >> 6;
-	font_px = FONT_SIZE;
 	return 0;
-}
-
-/* switch active pixel size (prompt 16 vs rows 14) */
-static void
-set_font(int sz)
-{
-	font_px = sz;
-	FT_Set_Pixel_Sizes(face, 0, sz);
-	asc = face->size->metrics.ascender >> 6;
 }
 
 static char
@@ -253,7 +192,7 @@ ci_has(const char *h, const char *n)
 	return 0;
 }
 
-/* fuzzy subsequence: every needle char appears in order (case-insensitive).
+/* fuzzy subsequence: every needle char appears in order, case blind.
  * "ffx" finds Firefox */
 static int
 ci_sub(const char *h, const char *n)
@@ -268,37 +207,35 @@ ci_sub(const char *h, const char *n)
 	return 1;
 }
 
-/* all space-separated tokens must match name or GenericName.
- * *exact = 1 when every token is a plain substring (better rank). */
+/* all space separated tokens must match name or GenericName.
+ * *exact = 1 when every token is a plain substring. */
 static int
 app_match(const struct app *a, int *exact)
 {
-	char q[sizeof query], *t;
+	char q[QUERY_MAX], *t;
 	int sub = 1, fuzz = 1;
+
 	if (!query[0]) {
 		*exact = 1;
 		return 1;
 	}
 	snprintf(q, sizeof q, "%s", query);
 	for (t = strtok(q, " "); t; t = strtok(NULL, " ")) {
-		int hs = ci_has(a->name, t) ||
-		    (a->gen[0] && ci_has(a->gen, t));
-		int hf = ci_sub(a->name, t) ||
-		    (a->gen[0] && ci_sub(a->gen, t));
-		if (!hs)
+		if (!ci_has(a->name, t) && !(a->gen[0] && ci_has(a->gen, t)))
 			sub = 0;
-		if (!hf)
+		if (!ci_sub(a->name, t) && !(a->gen[0] && ci_sub(a->gen, t)))
 			fuzz = 0;
 	}
 	*exact = sub;
 	return sub || fuzz;
 }
 
-/* exact substring matches first, then fuzzy; alphabetical inside each */
+/* exact substring matches first, then fuzzy */
 static void
 refilter(void)
 {
 	int i, ex;
+
 	nmatch = 0;
 	sel = 0;
 	for (i = 0; i < napps; i++)
@@ -313,43 +250,31 @@ static void
 clean_exec(char *e)
 {
 	char *w = e, *r;
+
 	for (r = e; *r; r++) {
-		if (*r == '%') {
-			if (r[1] == 0)
-				break;
-			if (r[1] == '%')
-				*w++ = '%';
-			r++;
+		if (*r != '%') {
+			*w++ = *r;
 			continue;
 		}
-		*w++ = *r;
+		if (r[1] == 0)
+			break;
+		if (r[1] == '%')
+			*w++ = '%';
+		r++;
 	}
 	*w = 0;
 }
 
-/* desktop id: base dir plus name foo.desktop gives dir-foo.desktop */
-static void
-make_id(char *dst, size_t cap, const char *base, const char *name)
-{
-	if (base)
-		snprintf(dst, cap, "%s-%s", base, name);
-	else
-		snprintf(dst, cap, "%s", name);
-}
-
-/* absolute path checked directly, else each PATH dir */
 static int
 have_bin(const char *bin)
 {
-	char *copy, *p, full[1024];
-	const char *path;
+	char full[1024];
+	const char *path = getenv("PATH");
+	char *copy, *p;
+
 	if (bin[0] == '/')
 		return access(bin, X_OK) == 0;
-	path = getenv("PATH");
-	if (!path)
-		return 0;
-	copy = strdup(path);
-	if (!copy)
+	if (!path || !(copy = strdup(path)))
 		return 0;
 	for (p = strtok(copy, ":"); p; p = strtok(NULL, ":")) {
 		snprintf(full, sizeof full, "%s/%s", p, bin);
@@ -363,11 +288,12 @@ have_bin(const char *bin)
 }
 
 static void
-add_app(const char *name, const char *gen, char *exe, const char *id)
+add_app(const char *name, const char *gen, char *exec, const char *id)
 {
 	struct app *a;
+
 	if (napps == capapps) {
-		capapps = capapps ? 2 * capapps : 128;
+		capapps = capapps ? 2 * capapps : 256;
 		apps = realloc(apps, (size_t)capapps * sizeof *apps);
 		if (!apps) {
 			perror("aizer: realloc");
@@ -378,33 +304,30 @@ add_app(const char *name, const char *gen, char *exe, const char *id)
 	snprintf(a->name, sizeof a->name, "%s", name);
 	snprintf(a->gen, sizeof a->gen, "%s", gen);
 	snprintf(a->id, sizeof a->id, "%s", id);
-	a->exec = exe;
+	a->exec = exec;
 }
 
 static void
 parse_desktop(const char *path, const char *id)
 {
 	FILE *f = fopen(path, "r");
-	char line[512], name[96] = "", gen[96] = "";
-	char *exe = NULL, *eq, *v;
-	int group = 0, skip = 0, type_ok = 1;
+	char line[512], name[96] = "", gen[96] = "", *exe = NULL, *eq, *v;
+	int entry = 0, skip = 0, app = 1;
+
 	if (!f)
 		return;
 	while (fgets(line, sizeof line, f)) {
 		line[strcspn(line, "\n")] = 0;
 		if (line[0] == '[') {
-			group = !strcmp(line, "[Desktop Entry]");
+			entry = !strcmp(line, "[Desktop Entry]");
 			continue;
 		}
-		if (!group || line[0] == '#')
-			continue;
-		eq = strchr(line, '=');
-		if (!eq)
+		if (!entry || line[0] == '#' || !(eq = strchr(line, '=')))
 			continue;
 		*eq = 0;
 		v = eq + 1;
 		if (!strcmp(line, "Type"))
-			type_ok = !strcmp(v, "Application");
+			app = !strcmp(v, "Application");
 		else if (!strcmp(line, "Name") && !name[0])
 			snprintf(name, sizeof name, "%s", v);
 		else if (!strcmp(line, "GenericName") && !gen[0])
@@ -418,7 +341,7 @@ parse_desktop(const char *path, const char *id)
 			skip = 1;
 	}
 	fclose(f);
-	if (skip || !type_ok || !name[0] || !exe) {
+	if (skip || !app || !name[0] || !exe) {
 		free(exe);
 		return;
 	}
@@ -430,47 +353,50 @@ parse_desktop(const char *path, const char *id)
 	add_app(name, gen, exe, id);
 }
 
-/* recursive scan of one applications dir; id dedup first-wins across the
- * whole run (user data_home scanned first) */
+/* recursive scan of one applications dir, first id wins */
 static void
 scan_dir(const char *dir, const char *base)
 {
 	DIR *d = opendir(dir);
 	struct dirent *e;
+	char path[1024], id[128];
+	struct stat st;
+	size_t n;
+	int i;
+
 	if (!d)
 		return;
 	while ((e = readdir(d))) {
-		size_t n = strlen(e->d_name);
-		char path[1024], id[128];
-		struct stat st;
-		int i, dup = 0;
-		if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, ".."))
+		if (e->d_name[0] == '.')
 			continue;
 		snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
 		if (stat(path, &st) < 0)
 			continue;
-		make_id(id, sizeof id, base, e->d_name);
+		if (base)
+			snprintf(id, sizeof id, "%s-%s", base, e->d_name);
+		else
+			snprintf(id, sizeof id, "%s", e->d_name);
 		if (S_ISDIR(st.st_mode)) {
 			scan_dir(path, id);
 			continue;
 		}
+		n = strlen(e->d_name);
 		if (n < 9 || strcmp(e->d_name + n - 8, ".desktop"))
 			continue;
 		for (i = 0; i < napps; i++)
-			if (!strcmp(apps[i].id, id)) {
-				dup = 1;
+			if (!strcmp(apps[i].id, id))
 				break;
-			}
-		if (!dup)
+		if (i == napps)
 			parse_desktop(path, id);
 	}
 	closedir(d);
 }
 
 static void
-scan_root(const char *share) /* <share>/applications */
+scan_root(const char *share)
 {
 	char dir[600];
+
 	snprintf(dir, sizeof dir, "%s/applications", share);
 	scan_dir(dir, NULL);
 }
@@ -478,22 +404,19 @@ scan_root(const char *share) /* <share>/applications */
 static void
 scan(void)
 {
+	const char *xdg = getenv("XDG_DATA_HOME");
 	const char *home = getenv("HOME");
-	const char *xdg;
-	char *copy, *p;
+	char dir[512], *copy, *p;
 
-	xdg = getenv("XDG_DATA_HOME");
-	if (xdg && xdg[0])
-		scan_root(xdg);
-	else if (home) {
-		char dir[512];
+	if (!xdg || !xdg[0]) {
+		if (!home)
+			return;
 		snprintf(dir, sizeof dir, "%s/.local/share", home);
-		scan_root(dir);
+		xdg = dir;
 	}
-	xdg = getenv("XDG_DATA_DIRS");
-	if (xdg && xdg[0]) {
-		copy = strdup(xdg);
-		if (copy) {
+	scan_root(xdg);
+	if ((xdg = getenv("XDG_DATA_DIRS")) && xdg[0]) {
+		if ((copy = strdup(xdg))) {
 			for (p = strtok(copy, ":"); p; p = strtok(NULL, ":"))
 				scan_root(p);
 			free(copy);
@@ -502,51 +425,41 @@ scan(void)
 		scan_root("/usr/local/share");
 		scan_root("/usr/share");
 	}
-	/* posix/BSD extras; id dedup makes repeats free */
-	scan_root("/usr/pkg/share");  /* NetBSD pkgsrc */
-	scan_root("/opt/local/share"); /* MacPorts */
+	/* posix and BSD extras, id dedup makes repeats free */
+	scan_root("/usr/pkg/share");
+	scan_root("/opt/local/share");
 }
 
 #if LIST_PATH_EXEC
-/* every executable in $PATH. Dedup by exact name among PATH entries
- * only, PATH dirs in order, appended after desktops then all sorted. */
+/* every executable in $PATH, dedup by name, PATH order kept */
 static void
 scan_path(void)
 {
 	const char *env = getenv("PATH");
-	char *copy, *p;
-	int start = napps, i;
+	char *copy, *p, full[1024];
 	struct dirent *e;
-	if (!env)
-		return;
-	copy = strdup(env);
-	if (!copy)
+	struct stat st;
+	int start = napps, i, dup;
+	DIR *d;
+
+	if (!env || !(copy = strdup(env)))
 		return;
 	for (p = strtok(copy, ":"); p; p = strtok(NULL, ":")) {
-		DIR *d = opendir(p);
-		if (!d)
+		if (!(d = opendir(p)))
 			continue;
 		while ((e = readdir(d))) {
-			if (!strcmp(e->d_name, "[") || !strcmp(e->d_name, "]"))
+			if (!isalnum((unsigned char)e->d_name[0]))
 				continue;
-			char full[1024];
-			char *ex;
-			struct stat st;
-			int dup = 0;
 			snprintf(full, sizeof full, "%s/%s", p, e->d_name);
 			if (stat(full, &st) < 0 || !S_ISREG(st.st_mode) ||
 			    !(st.st_mode & S_IXUSR))
 				continue;
+			dup = 0;
 			for (i = start; i < napps; i++)
-				if (!strcmp(apps[i].name, e->d_name)) {
+				if (!strcmp(apps[i].name, e->d_name))
 					dup = 1;
-					break;
-				}
-			if (dup)
-				continue;
-			ex = strdup(full);
-			if (ex)
-				add_app(e->d_name, "", ex, "");
+			if (!dup)
+				add_app(e->d_name, "", strdup(full), "");
 		}
 		closedir(d);
 	}
@@ -561,20 +474,23 @@ cmp_app(const void *a, const void *b)
 	    ((const struct app *)b)->name);
 }
 
+/* split in place, fork, exec, close launcher */
 static void
-run_cmd(char *cmd) /* tokenize in place, fork+execvp, close launcher, free */
+run(char *cmd)
 {
-	char *argv[64], *t;
-	int argc = 0;
+	char *av[64], *t;
+	int n = 0;
 	pid_t p;
-	for (t = strtok(cmd, " \t"); t && argc < 63; t = strtok(NULL, " \t"))
-		argv[argc++] = t;
-	argv[argc] = NULL;
-	if (argc > 0) {
+
+	for (t = strtok(cmd, " \t"); t && n < 63; t = strtok(NULL, " \t"))
+		av[n++] = t;
+	av[n] = NULL;
+	if (n) {
 		p = fork();
 		if (p == 0) {
 			setsid();
-			execvp(argv[0], argv);
+			execvp(av[0], av);
+			perror("aizer");
 			_exit(127);
 		}
 		if (p > 0)
@@ -587,80 +503,39 @@ static void
 launch(void)
 {
 	char *e;
+
 	if (sel < 0 || sel >= nmatch)
 		return;
-	e = strdup(apps[match[sel]].exec);
-	if (!e)
-		return;
-	clean_exec(e);
-	run_cmd(e);
-}
-
-static int
-u32_utf8(char *d, uint32_t cp)
-{
-	if (cp < 0x80) {
-		d[0] = (char)cp;
-		return 1;
+	if ((e = strdup(apps[match[sel]].exec))) {
+		clean_exec(e);
+		run(e);
 	}
-	if (cp < 0x800) {
-		d[0] = (char)(0xc0 | (cp >> 6));
-		d[1] = (char)(0x80 | (cp & 0x3f));
-		return 2;
-	}
-	if (cp < 0x10000) {
-		d[0] = (char)(0xe0 | (cp >> 12));
-		d[1] = (char)(0x80 | ((cp >> 6) & 0x3f));
-		d[2] = (char)(0x80 | (cp & 0x3f));
-		return 3;
-	}
-	d[0] = (char)(0xf0 | (cp >> 18));
-	d[1] = (char)(0x80 | ((cp >> 12) & 0x3f));
-	d[2] = (char)(0x80 | ((cp >> 6) & 0x3f));
-	d[3] = (char)(0x80 | (cp & 0x3f));
-	return 4;
 }
 
 static void
 draw(void)
 {
-	const char *qs;
-	int qx, cx, maxq, ql, ry0, top, i, idx, ry, on, ty;
-	uint32_t bg;
+	int i, top = sel >= MAX_ROWS ? sel - MAX_ROWS + 1 : 0;
+	int y, x, on;
 
-	/* 1px border, then translucent fill (reference SVG) */
-	rect(0, 0, WIDGET_W, WIDGET_H, COLOR_BORDER);
-	bg = (COLOR_BG & 0xffffff00u) | BG_ALPHA;
-	rect(1, 1, WIDGET_W - 2, WIDGET_H - 2, bg);
-
-	/* search line: prompt, query tail, blinking cursor */
-	set_font(FONT_SIZE);
-	qx = draw_str(PAD, SEARCH_BASE - asc, PROMPT, COLOR_ACCENT, WIDGET_W) + 10;
-	maxq = (WIDGET_W - PAD - CURSOR_W - qx) / (FONT_SIZE / 2);
-	qs = query;
-	ql = (int)strlen(query);
-	if (ql > maxq && maxq > 0)
-		qs = query + ql - maxq;
-	if (query[0])
-		draw_str(qx, SEARCH_BASE - asc, qs, COLOR_FG,
-		    WIDGET_W - PAD - CURSOR_W);
-	cx = qx + str_width(qs);
+	rect(0, 0, WIDGET_W, WIDGET_H,
+	    (COLOR_BG & 0xffffff00u) | BG_ALPHA);
+	x = text(PAD, SEARCH_BASE - asc, PROMPT, COLOR_ACCENT) + CURSOR_GAP;
+	x = text(x, SEARCH_BASE - asc, query, COLOR_FG);
+	if (x > WIDGET_W - CURSOR_W)
+		x = WIDGET_W - CURSOR_W;
 	if (blink)
-		rect(cx, SEARCH_BASE - 15, CURSOR_W, CURSOR_H, COLOR_ACCENT);
+		rect(x, CURSOR_TOP, CURSOR_W, CURSOR_H, COLOR_FG);
 
-	/* list: full-width selection bar, rows, GenericName never shown */
-	set_font(ROW_FONT_SIZE);
-	ry0 = LIST_TOP;
-	top = sel >= MAX_ROWS ? sel - MAX_ROWS + 1 : 0;
 	for (i = 0; i < MAX_ROWS && top + i < nmatch; i++) {
-		idx = match[top + i];
-		ry = ry0 + i * ROW_H;
 		on = top + i == sel;
+		y = LIST_TOP + i * ROW_H;
 		if (on)
-			rect(1, ry, WIDGET_W - 2, ROW_H, COLOR_SEL_BG);
-		ty = ry + ROW_BASE - asc;
-		draw_str(PAD, ty, apps[idx].name,
-		    on ? COLOR_FG : COLOR_ROW, WIDGET_W - PAD);
+			rect(0, y, WIDGET_W, ROW_H, COLOR_SEL_BG);
+		x = on ? text(PAD, y + ROW_BASE - asc, MARK, COLOR_FG)
+		    : PAD;
+		text(x, y + ROW_BASE - asc, apps[match[top + i]].name,
+		    on ? COLOR_FG : COLOR_ROW);
 	}
 }
 
@@ -672,7 +547,7 @@ present(void)
 	wl_surface_damage(surf, 0, 0, WIDGET_W, WIDGET_H);
 	wl_surface_commit(surf);
 	wl_display_flush(dpy);
-	need_redraw = 0;
+	redraw = 0;
 	busy = 1;
 }
 
@@ -693,15 +568,12 @@ create_buffer(void)
 {
 	int fd = memfd_create("aizer", MFD_CLOEXEC);
 	size_t sz = (size_t)WIDGET_W * WIDGET_H * 4;
-	void *p;
 	struct wl_shm_pool *pool;
 	struct wl_buffer *b;
-	if (fd < 0)
+	void *p;
+
+	if (fd < 0 || ftruncate(fd, (off_t)sz) < 0)
 		return NULL;
-	if (ftruncate(fd, (off_t)sz) < 0) {
-		close(fd);
-		return NULL;
-	}
 	p = mmap(NULL, sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	if (p == MAP_FAILED) {
 		close(fd);
@@ -716,6 +588,181 @@ create_buffer(void)
 	close(fd);
 	return b;
 }
+
+static void
+kb_keymap(void *data, struct wl_keyboard *k, uint32_t fmt, int32_t fd,
+    uint32_t size)
+{
+	char *s;
+	(void)data;
+	(void)k;
+	if (fmt != WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1) {
+		close(fd);
+		return;
+	}
+	s = mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
+	close(fd);
+	if (s == MAP_FAILED)
+		return;
+	xkb_state_unref(xkbs);
+	xkb_keymap_unref(xkbm);
+	xkbm = xkb_keymap_new_from_string(xkbc, s, XKB_KEYMAP_FORMAT_TEXT_V1,
+	    XKB_KEYMAP_COMPILE_NO_FLAGS);
+	munmap(s, size);
+	if (xkbm)
+		xkbs = xkb_state_new(xkbm);
+}
+
+static void
+kb_repeat(void *data, struct wl_keyboard *k, int32_t rate, int32_t delay)
+{
+	(void)data;
+	(void)k;
+	(void)delay; /* fixed REPEAT_DELAY, compositor delay ignored */
+	if (rate > 0) {
+		uint64_t step = (uint64_t)(1000 / rate);
+		rep_step = step < 25 ? step : 25;
+	}
+}
+
+static uint64_t
+now_ms(void)
+{
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+}
+
+static void
+key(uint32_t code)
+{
+	xkb_keysym_t sym;
+	char t[QUERY_MAX], tmp[8], *e;
+	size_t n;
+	int dirty = 0, len;
+
+	if (!xkbs)
+		return;
+	sym = xkb_state_key_get_one_sym(xkbs, code + 8);
+	switch (sym) {
+	case XKB_KEY_Escape:
+		running = 0;
+		return;
+	case XKB_KEY_Return:
+	case XKB_KEY_KP_Enter:
+		n = strcspn(query, " ");
+		memcpy(t, query, n);
+		t[n] = 0;
+		if (query[n] && have_bin(t) && (e = strdup(query)))
+			run(e);
+		else
+			launch();
+		return;
+	case XKB_KEY_BackSpace:
+		n = strlen(query);
+		while (n && ((unsigned char)query[n - 1] & 0xc0) == 0x80)
+			n--;
+		if (n) {
+			query[n - 1] = 0;
+			refilter();
+			dirty = 1;
+		}
+		break;
+	case XKB_KEY_Up:
+		dirty = sel > 0;
+		sel -= dirty;
+		break;
+	case XKB_KEY_Down:
+		dirty = sel + 1 < nmatch;
+		sel += dirty;
+		break;
+	case XKB_KEY_Home:
+		dirty = nmatch && sel;
+		if (nmatch)
+			sel = 0;
+		break;
+	case XKB_KEY_End:
+		dirty = nmatch && sel != nmatch - 1;
+		if (nmatch)
+			sel = nmatch - 1;
+		break;
+	default:
+		len = xkb_state_key_get_utf8(xkbs, code + 8, tmp, sizeof tmp);
+		if (len <= 0 || (unsigned char)tmp[0] < 32 || tmp[0] == 127)
+			break;
+		n = strlen(query);
+		if (n + (size_t)len < sizeof query) {
+			memcpy(query + n, tmp, (size_t)len);
+			query[n + (size_t)len] = 0;
+			refilter();
+			dirty = 1;
+		}
+		break;
+	}
+	redraw |= dirty;
+}
+
+static void
+kb_key(void *data, struct wl_keyboard *k, uint32_t serial, uint32_t time,
+    uint32_t code, uint32_t state)
+{
+	(void)data; (void)k; (void)serial; (void)time;
+	if (state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+		rep_key = code;
+		rep_at = now_ms() + REPEAT_DELAY;
+		key(code);
+	} else if (code == rep_key)
+		rep_key = 0;
+}
+
+static void
+kb_enter(void *data, struct wl_keyboard *k, uint32_t serial,
+    struct wl_surface *s, struct wl_array *keys)
+{
+	(void)data; (void)k; (void)serial; (void)s; (void)keys;
+}
+
+static void
+kb_leave(void *data, struct wl_keyboard *k, uint32_t serial,
+    struct wl_surface *s)
+{
+	(void)data; (void)k; (void)serial; (void)s;
+}
+
+static void
+kb_mods(void *data, struct wl_keyboard *k, uint32_t serial, uint32_t dep,
+    uint32_t latched, uint32_t locked, uint32_t group)
+{
+	(void)data; (void)k; (void)serial; (void)dep; (void)latched;
+	(void)locked; (void)group;
+}
+
+static const struct wl_keyboard_listener kb_listener = {
+	.enter = kb_enter,
+	.leave = kb_leave,
+	.modifiers = kb_mods,
+	.keymap = kb_keymap,
+	.key = kb_key,
+	.repeat_info = kb_repeat,
+};
+
+static void
+seat_caps(void *data, struct wl_seat *s, uint32_t caps)
+{
+	(void)data;
+	if ((caps & WL_SEAT_CAPABILITY_KEYBOARD) && !kb) {
+		kb = wl_seat_get_keyboard(s);
+		wl_keyboard_add_listener(kb, &kb_listener, NULL);
+	} else if (!(caps & WL_SEAT_CAPABILITY_KEYBOARD) && kb) {
+		wl_keyboard_destroy(kb);
+		kb = NULL;
+	}
+}
+
+static const struct wl_seat_listener seat_listener = {
+	.capabilities = seat_caps,
+};
 
 static void
 reg_global(void *data, struct wl_registry *r, uint32_t name,
@@ -735,231 +782,14 @@ reg_global(void *data, struct wl_registry *r, uint32_t name,
 }
 
 static void
-reg_global_remove(void *data, struct wl_registry *r, uint32_t name)
+reg_remove(void *data, struct wl_registry *r, uint32_t name)
 {
-	(void)data;
-	(void)r;
-	(void)name;
+	(void)data; (void)r; (void)name;
 }
 
 static const struct wl_registry_listener reg_listener = {
 	.global = reg_global,
-	.global_remove = reg_global_remove,
-};
-
-static void
-kb_keymap(void *data, struct wl_keyboard *k, uint32_t fmt, int32_t fd,
-    uint32_t size)
-{
-	char *s;
-	(void)data;
-	(void)k;
-	if (fmt != WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1) {
-		close(fd);
-		return;
-	}
-	s = mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
-	close(fd);
-	if (s == MAP_FAILED)
-		return;
-	if (xkbstate)
-		xkb_state_unref(xkbstate);
-	if (xkbmap)
-		xkb_keymap_unref(xkbmap);
-	xkbmap = xkb_keymap_new_from_string(xkbctx, s, XKB_KEYMAP_FORMAT_TEXT_V1,
-	    XKB_KEYMAP_COMPILE_NO_FLAGS);
-	munmap(s, size);
-	if (xkbmap)
-		xkbstate = xkb_state_new(xkbmap);
-}
-
-static void
-kb_enter(void *data, struct wl_keyboard *k, uint32_t serial,
-    struct wl_surface *s, struct wl_array *keys)
-{
-	(void)data;
-	(void)k;
-	(void)serial;
-	(void)s;
-	(void)keys;
-}
-
-static void
-kb_leave(void *data, struct wl_keyboard *k, uint32_t serial,
-    struct wl_surface *s)
-{
-	(void)data;
-	(void)k;
-	(void)serial;
-	(void)s;
-}
-
-static void
-kb_mods(void *data, struct wl_keyboard *k, uint32_t serial, uint32_t dep,
-    uint32_t latched, uint32_t locked, uint32_t group)
-{
-	(void)data;
-	(void)k;
-	(void)serial;
-	(void)dep;
-	(void)latched;
-	(void)locked;
-	(void)group;
-}
-
-static void
-kb_repeat(void *data, struct wl_keyboard *k, int32_t rate, int32_t delay)
-{
-	(void)data;
-	(void)k;
-	(void)delay; /* fixed REPEAT_DELAY, compositor delay ignored */
-	if (rate > 0)
-		rep_rate = rate;
-}
-
-static uint64_t
-now_ms(void)
-{
-	struct timespec ts;
-	clock_gettime(CLOCK_MONOTONIC, &ts);
-	return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
-}
-
-/* one key press action, shared by press events and the repeat timer */
-static void
-handle_key(uint32_t key)
-{
-	xkb_keysym_t sym;
-	uint32_t ch;
-	size_t ql;
-	int dirty = 0;
-	sym = xkb_state_key_get_one_sym(xkbstate, key + 8);
-	switch (sym) {
-	case XKB_KEY_Escape:
-		running = 0;
-		break;
-	case XKB_KEY_Return:
-	case XKB_KEY_KP_Enter: {
-		char tok[QUERY_MAX], *e;
-		size_t i = 0;
-		while (query[i] && query[i] != ' ' && i + 1 < sizeof tok) {
-			tok[i] = query[i];
-			i++;
-		}
-		tok[i] = 0;
-		/* typed command with arguments (alacritty -e htop): run it */
-		if (i && strchr(query, ' ') && have_bin(tok) && (e = strdup(query)))
-			run_cmd(e);
-		else
-			launch();
-		break;
-	}
-	case XKB_KEY_BackSpace:
-		ql = strlen(query);
-		while (ql > 0 && ((unsigned char)query[ql - 1] & 0xc0) == 0x80)
-			ql--;
-		if (ql > 0)
-			ql--;
-		if (query[ql] != 0 || strlen(query) > 0) {
-			query[ql] = 0;
-			refilter();
-			dirty = 1;
-		}
-		break;
-	case XKB_KEY_Up:
-		if (sel > 0) {
-			sel--;
-			dirty = 1;
-		}
-		break;
-	case XKB_KEY_Down:
-		if (sel + 1 < nmatch) {
-			sel++;
-			dirty = 1;
-		}
-		break;
-	case XKB_KEY_Home:
-		if (nmatch) {
-			sel = 0;
-			dirty = 1;
-		}
-		break;
-	case XKB_KEY_End:
-		if (nmatch) {
-			sel = nmatch - 1;
-			dirty = 1;
-		}
-		break;
-	default:
-		ch = xkb_state_key_get_utf32(xkbstate, key + 8);
-		ql = strlen(query);
-		if (ch >= 32 && ch != 0x7f) {
-			char tmp[4];
-			int n = u32_utf8(tmp, ch);
-			if (ql + (size_t)n < sizeof query) {
-				memcpy(query + ql, tmp, (size_t)n);
-				query[ql + (size_t)n] = 0;
-				refilter();
-				dirty = 1;
-			}
-		}
-		break;
-	}
-	if (dirty)
-		need_redraw = 1;
-}
-
-static void
-kb_key(void *data, struct wl_keyboard *k, uint32_t serial, uint32_t time,
-    uint32_t key, uint32_t state)
-{
-	(void)data;
-	(void)k;
-	(void)serial;
-	(void)time;
-	if (!xkbstate)
-		return;
-	if (state == WL_KEYBOARD_KEY_STATE_PRESSED) {
-		rep_key = key;
-		rep_at = now_ms() + REPEAT_DELAY;
-		handle_key(key);
-	} else if (state == WL_KEYBOARD_KEY_STATE_RELEASED && key == rep_key)
-		rep_key = 0;
-}
-
-static const struct wl_keyboard_listener kb_listener = {
-	.keymap = kb_keymap,
-	.enter = kb_enter,
-	.leave = kb_leave,
-	.key = kb_key,
-	.modifiers = kb_mods,
-	.repeat_info = kb_repeat,
-};
-
-static void
-seat_caps(void *data, struct wl_seat *s, uint32_t caps)
-{
-	(void)data;
-	if ((caps & WL_SEAT_CAPABILITY_KEYBOARD) && !kb) {
-		kb = wl_seat_get_keyboard(s);
-		wl_keyboard_add_listener(kb, &kb_listener, NULL);
-	} else if (!(caps & WL_SEAT_CAPABILITY_KEYBOARD) && kb) {
-		wl_keyboard_destroy(kb);
-		kb = NULL;
-	}
-}
-
-static void
-seat_name(void *data, struct wl_seat *s, const char *name)
-{
-	(void)data;
-	(void)s;
-	(void)name;
-}
-
-static const struct wl_seat_listener seat_listener = {
-	.capabilities = seat_caps,
-	.name = seat_name,
+	.global_remove = reg_remove,
 };
 
 static void
@@ -971,7 +801,7 @@ layer_configure(void *data, struct zwlr_layer_surface_v1 *s, uint32_t serial,
 	(void)h;
 	zwlr_layer_surface_v1_ack_configure(s, serial);
 	configured = 1;
-	need_redraw = 1;
+	redraw = 1;
 }
 
 static void
@@ -987,13 +817,12 @@ static const struct zwlr_layer_surface_v1_listener lfsurf_listener = {
 	.closed = layer_closed,
 };
 
-static int lockfd = -1;
-
 static int
 single_instance(void)
 {
 	char path[256];
 	const char *dir = getenv("XDG_RUNTIME_DIR");
+
 	if (dir && dir[0])
 		snprintf(path, sizeof path, "%s/aizer.lock", dir);
 	else
@@ -1007,7 +836,6 @@ single_instance(void)
 		return 0;
 	if (flock(lockfd, LOCK_EX | LOCK_NB) < 0) {
 		close(lockfd);
-		lockfd = -1;
 		return -1;
 	}
 	return 0;
@@ -1017,12 +845,11 @@ int
 main(void)
 {
 	struct pollfd pfd;
+	uint64_t blink_at, now, wake;
 	int r;
-	uint64_t blink_at;
 
 	if (single_instance() < 0)
 		return 0;
-
 	if (load_font()) {
 		fprintf(stderr, "aizer: cannot load font %s\n", FONT_NAME);
 		return 1;
@@ -1033,18 +860,23 @@ main(void)
 #endif
 	fprintf(stderr, "aizer: %d apps\n", napps);
 	qsort(apps, (size_t)napps, sizeof *apps, cmp_app);
-	match = calloc((size_t)(napps ? napps : 1), sizeof *match);
-	if (!match) {
+	if (!(match = calloc((size_t)(napps ? napps : 1), sizeof *match))) {
 		perror("aizer: calloc");
 		return 1;
 	}
 	refilter();
 
+	xkbc = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+	if (!xkbc) {
+		fprintf(stderr, "aizer: xkb context failed\n");
+		return 1;
+	}
 	dpy = wl_display_connect(NULL);
 	if (!dpy) {
 		fprintf(stderr, "aizer: cannot connect to wayland display\n");
 		return 1;
 	}
+	fcntl(wl_display_get_fd(dpy), F_SETFD, FD_CLOEXEC);
 	wl_registry_add_listener(wl_display_get_registry(dpy), &reg_listener,
 	    NULL);
 	wl_display_roundtrip(dpy);
@@ -1053,7 +885,6 @@ main(void)
 		fprintf(stderr, "aizer: compositor lacks needed interfaces\n");
 		return 1;
 	}
-	xkbctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
 
 	surf = wl_compositor_create_surface(comp);
 	lfsurf = zwlr_layer_shell_v1_get_layer_surface(layer, surf, NULL,
@@ -1069,9 +900,7 @@ main(void)
 		fprintf(stderr, "aizer: layer surface not configured\n");
 		return 1;
 	}
-
-	buf = create_buffer();
-	if (!buf) {
+	if (!(buf = create_buffer())) {
 		fprintf(stderr, "aizer: shm buffer failed\n");
 		return 1;
 	}
@@ -1081,22 +910,15 @@ main(void)
 	pfd.events = POLLIN;
 	blink_at = now_ms() + BLINK_MS;
 	while (running) {
-		uint64_t now;
-		if (need_redraw && !busy)
+		if (redraw && !busy)
 			present();
 		wl_display_dispatch_pending(dpy);
 		wl_display_flush(dpy);
 		now = now_ms();
-		r = BLINK_MS;
-		if (rep_key && rep_at <= now)
-			r = 0;
-		else if (rep_key && rep_at - now < (uint64_t)r)
-			r = (int)(rep_at - now);
-		if (blink_at <= now)
-			r = 0;
-		else if (blink_at - now < (uint64_t)r)
-			r = (int)(blink_at - now);
-		r = poll(&pfd, 1, r);
+		wake = blink_at;
+		if (rep_key && rep_at < wake)
+			wake = rep_at;
+		r = poll(&pfd, 1, wake > now ? (int)(wake - now) : 0);
 		if (r < 0) {
 			if (errno == EINTR)
 				continue;
@@ -1105,23 +927,27 @@ main(void)
 		if (r == 0) {
 			now = now_ms();
 			if (rep_key && now >= rep_at) {
-				handle_key(rep_key);
-				rep_at = now + 1000 / rep_rate;
+				key(rep_key);
+				rep_at = now + rep_step;
 			}
 			if (now >= blink_at) {
 				blink = !blink;
 				blink_at = now + BLINK_MS;
-				need_redraw = 1;
+				redraw = 1;
 			}
-			continue;
-		}
-		if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL))
+		} else if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL))
 			break;
-		if (wl_display_dispatch(dpy) < 0)
+		else if (wl_display_dispatch(dpy) < 0)
 			break;
 	}
 
+	munmap(px, (size_t)WIDGET_W * WIDGET_H * 4);
+	xkb_state_unref(xkbs);
+	xkb_keymap_unref(xkbm);
+	xkb_context_unref(xkbc);
 	wl_display_disconnect(dpy);
+	while (napps)
+		free(apps[--napps].exec);
 	free(apps);
 	free(match);
 	return 0;

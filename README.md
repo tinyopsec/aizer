@@ -1,17 +1,19 @@
 <div align="center">
-  <img src="https://capsule-render.vercel.app/api?type=waving&color=0A0A0A&height=80&section=header&text=aizer&fontSize=52&fontColor=E5E4E2&fontAlignY=72&animation=fadeIn" alt="aizer header">
+  <img src="https://capsule-render.vercel.app/api?type=waving&color=1C2230&height=80&section=header&text=aizer&fontSize=52&fontColor=D3DAE6&fontAlignY=72&animation=fadeIn" alt="aizer header">
   <br>
-  <img src="https://readme-typing-svg.demolab.com?font=JetBrains+Mono&size=14&pause=1200&color=E5E4E2&center=true&vCenter=true&width=600&lines=Minimal+Wayland+application+launcher;Centered+rectangle.+No+runtime+config;Compile-time+configuration+only" alt="aizer typing">
+  <img src="https://readme-typing-svg.demolab.com?font=JetBrains+Mono&size=14&pause=1200&color=D3DAE6&center=true&vCenter=true&width=600&lines=Minimal+Wayland+application+launcher;Centered+rectangle.+No+runtime+config;Compile-time+configuration+only" alt="aizer typing">
   <br>
   <img src="https://raw.githubusercontent.com/tinyopsec/assets/main/aizer/aizer-logo.svg" style="width: 32%; height: auto;" alt="aizer logo">
+  <br>
+  <br>
 </div>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/license-MIT-E5E4E2?style=flat&labelColor=0A0A0A" alt="license MIT">
-  <img src="https://img.shields.io/badge/C23-E5E4E2?style=flat&label=lang&labelColor=0A0A0A&logo=c&logoColor=E5E4E2" alt="C23">
-  <img src="https://img.shields.io/badge/Wayland-E5E4E2?style=flat&label=display&labelColor=0A0A0A" alt="Wayland">
-  <img src="https://img.shields.io/badge/make-E5E4E2?style=flat&label=build&labelColor=0A0A0A&logo=gnu&logoColor=E5E4E2" alt="make">
-  <img src="https://img.shields.io/badge/Linux-E5E4E2?style=flat&labelColor=0A0A0A&logo=linux&logoColor=E5E4E2" alt="Linux">
+  <img src="https://img.shields.io/badge/license-MIT-D3DAE6?style=flat&labelColor=1C2230" alt="license MIT">
+  <img src="https://img.shields.io/badge/C23-D3DAE6?style=flat&label=lang&labelColor=1C2230&logo=c&logoColor=D3DAE6" alt="C23">
+  <img src="https://img.shields.io/badge/Wayland-D3DAE6?style=flat&label=display&labelColor=1C2230" alt="Wayland">
+  <img src="https://img.shields.io/badge/make-D3DAE6?style=flat&label=build&labelColor=1C2230&logo=gnu&logoColor=D3DAE6" alt="make">
+  <img src="https://img.shields.io/badge/Linux-D3DAE6?style=flat&labelColor=1C2230&logo=linux&logoColor=D3DAE6" alt="Linux">
 </p>
 
 ## Contents
@@ -46,7 +48,7 @@ I kept only what a launcher needs: a widget, a list, a filter, a launch. No bar,
 
 | Area | aizer |
 |---|---|
-| Lines of code | about 1100 (one reading session) |
+| Lines of code | about 950 (one reading session) |
 | Runtime dependencies | libc, wayland-client, xkbcommon, freetype, fontconfig |
 | Idle RAM | a few MB |
 | Configuration | single flat `aizer.h`, compile time only |
@@ -138,17 +140,17 @@ There is no config file, no IPC and no reload mechanism.
 
 | Option | Default | Description |
 |---|---:|---|
-| `WIDGET_W`, `WIDGET_H` | 419, 449 | widget size in pixels |
-| `ROW_H`, `MAX_ROWS` | 26, 15 | row height and visible rows |
+| `WIDGET_W`, `WIDGET_H` | 392, 210 | widget size in pixels |
+| `ROW_H`, `MAX_ROWS` | 19, 9 | row height and visible rows |
 | `COLOR_*` | see file | colors in `0xRRGGBBAA` |
 | `BG_ALPHA` | `0xff` | background alpha (0xff = opaque) |
-| `FONT_NAME`, `FONT_SIZE`, `ROW_FONT_SIZE` | monospace, 16, 14 | font and sizes |
+| `FONT_NAME`, `FONT_SIZE` | Hack, 13 | font and size |
 | `PROMPT` | `">"` | search line prompt |
 | `QUERY_MAX` | 64 | query buffer size |
 | `BLINK_MS` | 550 | cursor blink half period in ms |
-| `REPEAT_DELAY` | 100 | key repeat delay in ms |
+| `REPEAT_DELAY` | 80 | key repeat delay in ms |
 | `LIST_PATH_EXEC` | 1 | list executables from `$PATH` |
-| `PAD`, `LIST_TOP`, `SEARCH_BASE` | 24, 51, 32 | layout offsets |
+| `PAD`, `LIST_TOP`, `SEARCH_BASE` | 28, 31, 20 | layout offsets |
 
 ---
 
@@ -165,8 +167,6 @@ The application list comes from `.desktop` files under the XDG data directories 
 - No history or recent apps: the list resets on every launch.
 - No runtime config: change `aizer.h` and recompile.
 - Requires a compositor with `wlr-layer-shell` support.
-- Silent failure on exec: if a typed command is not found, the launcher exits without an error message.
-- `xkb_context_new` failure is not checked.
 
 ---
 

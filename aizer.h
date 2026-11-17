@@ -1,46 +1,46 @@
 /* aizer.h configuration only, data no logic. Change value, recompile.
  * Customize: colors, font, transparency (BG_ALPHA), widget size, layout,
- * prompt, cursor blink, key repeat, PATH scan (see blocks below).
- * Values from ref/launcher_improved.svg. */
+ * prompt, mark, cursor blink, key repeat, PATH scan.
+ * Geometry from ref/launcher.svg, colors from ref/PALETTE.md. */
 #ifndef AIZER_H
 #define AIZER_H
 
-/* widget: centered rectangle (see PHILOSOPHY-RULES.md 5.1) */
-#define WIDGET_W 419
-#define WIDGET_H 449
-#define ROW_H 26
-#define MAX_ROWS 15
+/* widget: centered rectangle, no frame */
+#define WIDGET_W 392
+#define WIDGET_H 210
+#define ROW_H 19
+#define MAX_ROWS 9
 
-/* colors 0xRRGGBBAA, Obsidian Chrome Palette (ref/obsidian-chrome-palette.css):
- * onyx bg, blue slate accent/frame, alabaster selected/query text */
-#define COLOR_BORDER 0x536878ffu  /* blue slate, 1px frame */
-#define COLOR_BG     0x0a0a0affu  /* onyx */
-#define COLOR_FG     0xe5e4e2ffu  /* alabaster grey: query + selected row */
-#define COLOR_ROW    0x536878ffu  /* blue slate: unselected rows */
-#define COLOR_ACCENT 0x536878ffu  /* blue slate: prompt + cursor */
-#define COLOR_SEL_BG 0x53687859u  /* blue slate ~35%: selection bar */
+/* colors 0xRRGGBBAA, palette Permafrost Dusk, see ref/PALETTE.md */
+#define COLOR_BG     0x1c2230ffu  /* widget background, Abyss */
+#define COLOR_FG     0xd3dae6ffu  /* query, selected row, cursor, Rime */
+#define COLOR_ROW    0xa99bd0ffu  /* other rows, Dusk */
+#define COLOR_ACCENT 0x7dc4b8ffu  /* prompt, Thaw */
+#define COLOR_SEL_BG 0x283042ffu  /* selection bar, Slate */
 
-/* background alpha, transparency of widget surface (0xff = opaque) */
+/* background alpha, 0xff = opaque */
 #define BG_ALPHA 0xffu
 
 /* key hold: ms before repeat starts, then compositor rate */
-#define REPEAT_DELAY 150
+#define REPEAT_DELAY 80
 
 /* list every executable from $PATH as an app */
 #define LIST_PATH_EXEC 1
 
-/* layout (widget-local px, from the reference SVG) */
-#define PAD 24          /* text left edge */
-#define LIST_TOP 51     /* first row rect top */
-#define SEARCH_BASE 32  /* prompt baseline */
-#define CURSOR_W 9
-#define CURSOR_H 19
-#define ROW_BASE 18     /* row text baseline from row top */
+/* layout, widget px */
+#define PAD 28            /* text left edge */
+#define LIST_TOP 31       /* first row top */
+#define SEARCH_BASE 20    /* prompt baseline */
+#define ROW_BASE 14       /* row text baseline from row top */
+#define CURSOR_W 2
+#define CURSOR_H 15
+#define CURSOR_TOP 8
+#define CURSOR_GAP 8      /* gap between prompt and query */
+#define MARK "\xc2\xbb "  /* selected row prefix, right guillemet and space */
 
-/* font (via fontconfig) */
-#define FONT_NAME "monospace"
-#define FONT_SIZE 16    /* prompt */
-#define ROW_FONT_SIZE 14 /* list rows */
+/* font via fontconfig */
+#define FONT_NAME "Hack"
+#define FONT_SIZE 13
 
 /* input */
 #define PROMPT ">"      /* search line prompt text */
