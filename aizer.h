@@ -22,7 +22,7 @@
 #define BG_ALPHA 0xffu
 
 /* key hold: ms before repeat starts, then compositor rate */
-#define REPEAT_DELAY 80
+#define REPEAT_DELAY 150
 
 /* list every executable from $PATH as an app */
 #define LIST_PATH_EXEC 1

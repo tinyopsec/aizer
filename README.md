@@ -148,7 +148,7 @@ There is no config file, no IPC and no reload mechanism.
 | `PROMPT` | `">"` | search line prompt |
 | `QUERY_MAX` | 64 | query buffer size |
 | `BLINK_MS` | 550 | cursor blink half period in ms |
-| `REPEAT_DELAY` | 80 | key repeat delay in ms |
+| `REPEAT_DELAY` | 150 | key repeat delay in ms |
 | `LIST_PATH_EXEC` | 1 | list executables from `$PATH` |
 | `PAD`, `LIST_TOP`, `SEARCH_BASE` | 28, 31, 20 | layout offsets |
 

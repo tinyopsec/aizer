@@ -52,7 +52,7 @@ static struct xkb_keymap *xkbm;
 static struct xkb_state *xkbs;
 static int running = 1, configured, redraw, blink = 1, busy;
 static uint32_t rep_key;
-static uint64_t rep_at, rep_step = 25;
+static uint64_t rep_at, rep_step = 40;
 static int lockfd = -1;
 
 static FT_Library ft;
@@ -619,10 +619,8 @@ kb_repeat(void *data, struct wl_keyboard *k, int32_t rate, int32_t delay)
 	(void)data;
 	(void)k;
 	(void)delay; /* fixed REPEAT_DELAY, compositor delay ignored */
-	if (rate > 0) {
-		uint64_t step = (uint64_t)(1000 / rate);
-		rep_step = step < 25 ? step : 25;
-	}
+	if (rate > 0)
+		rep_step = (uint64_t)(1000 / rate);
 }
 
 static uint64_t
